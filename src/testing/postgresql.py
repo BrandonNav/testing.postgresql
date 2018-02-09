@@ -13,6 +13,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import atexit
 import os
 import pg8000
 import signal
@@ -125,6 +126,8 @@ class Postgresql(Database):
                 if cursor.fetchone()[0] <= 0:
                     cursor.execute('CREATE DATABASE {}'.format(self.settings['db_name']))
 
+        atexit.register(self.cleanup)
+
     def is_server_available(self):
         try:
             with closing(pg8000.connect(**self.dsn(database='template1'))):
@@ -138,6 +141,9 @@ class Postgresql(Database):
         # send SIGINT instead of SIGTERM
         super(Postgresql, self).terminate(signal.SIGINT if os.name != 'nt' else None)
 
+    def cleanup(self):
+        super(Postgresql, self).cleanup()
+        self.terminate()
 
 class PostgresqlFactory(DatabaseFactory):
     target_class = Postgresql
