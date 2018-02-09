@@ -19,6 +19,7 @@ import signal
 import subprocess
 from glob import glob
 from contextlib import closing
+from distutils.version import LooseVersion
 
 from testing.common.database import (
     Database, DatabaseFactory, get_path_of, SkipIfNotInstalledDecorator
@@ -27,10 +28,27 @@ from testing.common.database import (
 
 __all__ = ['Postgresql', 'skipIfNotFound']
 
+def sorted_paths(glob_pattern):
+    """
+    Try to return search paths sorted by version number
+    (latest version first)
+    """
+    values = glob(glob_pattern)
+    try:
+        idx = glob_pattern.index('*')
+
+        # -> [('9.4', '/usr/lib/postgresql/9.4')]
+        matches = [(LooseVersion(match[idx:]), match) for match in values]
+
+        return [path for _, path in sorted(matches, reverse=True)]
+    except Exception:
+        return values
+
 SEARCH_PATHS = (['/usr/local/pgsql', '/usr/local'] +
-                glob('/usr/pgsql-*') +  # for CentOS/RHEL
-                glob('/usr/lib/postgresql/*') +  # for Debian/Ubuntu
-                glob('/opt/local/lib/postgresql*'))  # for MacPorts
+                sorted_paths('/usr/pgsql-*') +  # for CentOS/RHEL
+                sorted_paths('/usr/lib/postgresql/*') +  # for Debian/Ubuntu
+                sorted_paths('/opt/local/lib/postgresql*') +  # for MacPorts
+                sorted_paths('/usr/local/opt/postgresql*'))  # for Homebrew
 
 
 class Postgresql(Database):
@@ -40,6 +58,8 @@ class Postgresql(Database):
                             initdb_args='-U postgres -A trust',
                             postgres=None,
                             postgres_args='-h 127.0.0.1 -F -c logging_collector=off',
+                            postgres_version=None,
+                            db_name = 'test',
                             pid=None,
                             port=None,
                             copy_data_from=None)
@@ -48,11 +68,11 @@ class Postgresql(Database):
     def initialize(self):
         self.initdb = self.settings.pop('initdb')
         if self.initdb is None:
-            self.initdb = find_program('initdb', ['bin'])
+            self.initdb = find_program('initdb', ['bin'], self.settings['postgres_version'])
 
         self.postgres = self.settings.pop('postgres')
         if self.postgres is None:
-            self.postgres = find_program('postgres', ['bin'])
+            self.postgres = find_program('postgres', ['bin'], self.settings['postgres_version'])
 
     def dsn(self, **kwargs):
         # "database=test host=localhost user=postgres"
@@ -60,7 +80,7 @@ class Postgresql(Database):
         params.setdefault('port', self.settings['port'])
         params.setdefault('host', '127.0.0.1')
         params.setdefault('user', 'postgres')
-        params.setdefault('database', 'test')
+        params.setdefault('database', self.settings['db_name'])
 
         return params
 
@@ -91,6 +111,7 @@ class Postgresql(Database):
     def get_server_commandline(self):
         return ([self.postgres,
                  '-p', str(self.settings['port']),
+                 '-d', str(self.settings['db_name']),
                  '-D', os.path.join(self.base_dir, 'data'),
                  '-k', os.path.join(self.base_dir, 'tmp')] +
                 self.settings['postgres_args'].split())
@@ -99,9 +120,10 @@ class Postgresql(Database):
         with closing(pg8000.connect(**self.dsn(database='postgres'))) as conn:
             conn.autocommit = True
             with closing(conn.cursor()) as cursor:
-                cursor.execute("SELECT COUNT(*) FROM pg_database WHERE datname='test'")
+                cursor.execute("SELECT COUNT(*) FROM pg_database WHERE datname='{}'".format(
+                    self.settings['db_name']))
                 if cursor.fetchone()[0] <= 0:
-                    cursor.execute('CREATE DATABASE test')
+                    cursor.execute('CREATE DATABASE {}'.format(self.settings['db_name']))
 
     def is_server_available(self):
         try:
@@ -131,15 +153,17 @@ class PostgresqlSkipIfNotInstalledDecorator(SkipIfNotInstalledDecorator):
 skipIfNotFound = skipIfNotInstalled = PostgresqlSkipIfNotInstalledDecorator()
 
 
-def find_program(name, subdirs):
+def find_program(name, subdirs, version=None):
     path = get_path_of(name)
     if path:
-        return path
+        if not version or version in path:
+            return path
 
     for base_dir in SEARCH_PATHS:
         for subdir in subdirs:
             path = os.path.join(base_dir, subdir, name)
             if os.path.exists(path):
-                return path
+                if not version or version in path:
+                    return path
 
     raise RuntimeError("command not found: %s" % name)

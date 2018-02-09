@@ -264,3 +264,10 @@ class TestPostgresql(unittest.TestCase):
                 conn.close()
         finally:
             Postgresql.clear_cache()
+
+    def test_dsn_and_url_with_custom_database_name(self):
+        pgsql = testing.postgresql.Postgresql(port=12345, auto_start=0, database='foo')
+        self.assertEqual({'database': 'foo', 'host': '127.0.0.1', 'port': 12345, 'user': 'postgres'},
+                         pgsql.dsn())
+        self.assertEqual("postgresql://postgres@127.0.0.1:12345/foo", pgsql.url())
+
